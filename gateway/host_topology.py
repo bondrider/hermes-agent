@@ -110,3 +110,30 @@ def host_gateway_serving(profile_name: Optional[str] = None) -> Optional[HostGat
 
         profile_name = get_active_profile_name()
     return topology if topology.serves(profile_name) else None
+
+
+def adopt_home_gateway_when_stopped(running, pid, home, *, probe=None):
+    """Reconcile a surface's own-home liveness verdict with the gateway that actually owns THIS home.
+
+    A surface (the dashboard) asks its liveness ladder "is a gateway I can prove owns MY hermes_home
+    running?" An entrypoint-supervised ``hermes gateway run`` for that SAME home -- started and owned
+    by the container init, folded on with ``--force`` and sometimes with no ``gateway.pid`` -- can be
+    missed by the surface's own verdict, so the badge reads a false "Stopped / no pid". When, and only
+    when, the local verdict is not-running, prove the gateway for THIS home through the shared
+    ``gateway.status.live_gateway_pid_for_home`` ladder (pid file + runtime lock, then the runtime
+    record proven against the live process); if it owns ``home``, report running with that home's pid.
+
+    A gateway in a DIFFERENT home is never adopted. Default behaviour is unchanged: a locally-running
+    gateway is returned untouched (the probe is not consulted), and when no live gateway owns ``home``
+    nothing changes. Returns ``(running, pid)``. ``probe(home) -> pid | None`` is injectable for tests;
+    None resolves the real ladder at call time so a monkeypatch on ``gateway.status`` is honoured.
+    """
+    if running:
+        return running, pid
+    if probe is None:
+        from gateway.status import live_gateway_pid_for_home
+        probe = live_gateway_pid_for_home
+    live_pid = probe(home)
+    if live_pid is None:
+        return running, pid
+    return True, int(live_pid)

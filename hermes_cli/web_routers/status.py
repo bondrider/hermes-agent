@@ -22,6 +22,7 @@ from gateway.status import (
     derive_gateway_busy, derive_gateway_drainable, normalize_updated_at, parse_active_agents,
     profile_platforms_from_multiplexer, resolve_gateway_liveness, retained_gateway_state,
     runtime_status_heartbeat_age_s, runtime_status_is_stale)
+from gateway.host_topology import adopt_home_gateway_when_stopped
 from hermes_cli import __release_date__
 from hermes_cli.config import get_config_path, get_env_path
 from hermes_cli.version_info import get_version_info
@@ -356,8 +357,23 @@ async def _resolve_gateway_status(profile_dir: Optional[Path], health_url) -> di
     # ``liveness.runtime`` is set only when the shared multiplexer answered for a served profile: its
     # gateway IS that process, so name every bot a restart would blip ("default, alpha, beta").
     served = (liveness.runtime or {}).get("served_profiles")
+    # QT dashboard fix (home-scoped gateway adoption): an entrypoint-supervised ``hermes gateway run``
+    # for THIS surface's own hermes_home (the dashboard runs over the development home) serves the chats
+    # but can be missed by this surface's own liveness verdict, so the badge reads a false "Stopped / no
+    # pid". When the local verdict is not-running, prove the gateway that owns THIS home and adopt its
+    # pid. Guarded: unchanged when a local gateway runs or when no gateway owns this home; a gateway in
+    # a DIFFERENT home is never adopted. ``_project_gateway_platforms`` already ran on the ORIGINAL
+    # verdict, so no platform is reported "connected" merely from adoption. Live fact (2026-10-27): the
+    # dashboard's home is the development home and its gateway (the entrypoint-supervised one) is the
+    # one the badge must show (see PATCHES.md, patch A).
+    _adopt_home = profile_dir or get_process_hermes_home()
+    _was_running = gateway_running
+    gateway_running, gateway_pid = adopt_home_gateway_when_stopped(
+        gateway_running, liveness.pid, _adopt_home)
+    if gateway_running and not _was_running and gateway_state in (None, "stopped"):
+        gateway_state = "running"
     return {
-        "runtime": runtime, "gateway_running": gateway_running, "gateway_pid": liveness.pid,
+        "runtime": runtime, "gateway_running": gateway_running, "gateway_pid": gateway_pid,
         "gateway_state": gateway_state, "gateway_platforms": gateway_platforms,
         "gateway_exit_reason": gateway_exit_reason, "gateway_updated_at": gateway_updated_at,
         "gateway_heartbeat_stale_s": gateway_heartbeat_stale_s,
