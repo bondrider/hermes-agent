@@ -1990,12 +1990,12 @@ def _with_session_toolsets(selection, platform: str) -> list[str]:
     The fold-in happens after ``_get_platform_tools`` already subtracted ``agent.disabled_toolsets``,
     so the same subtraction is applied to the fold-in itself — otherwise ``disabled_toolsets:
     [project]`` is a no-op on desktop/TUI, the only surfaces where the client toolsets exist
-    (#54433). PATCH D (M1/R2-S9): EVERY folded surface toolset named in ``agent.disabled_toolsets``
-    is dropped, ``desktop_ui`` included — a profile whose disabled list names it (e.g. the advisory
-    CIOS complement, which disables project and desktop_ui) must not have the client surface
-    resurrect it. The agent's own ``disabled_toolsets`` argument remains the second gate."""
+    (#54433). ``desktop_ui`` is kept regardless: it is the client's own control surface, not a
+    model toolset."""
     fold_in = _gui_surface_toolsets(platform) - set(selection)
-    fold_in -= set(_load_disabled_toolsets() or [])
+    disabled = set(_load_disabled_toolsets() or [])
+    if disabled:
+        fold_in -= disabled - {"desktop_ui"}
     return [*selection, *sorted(fold_in)]
 
 

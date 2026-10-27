@@ -61,26 +61,13 @@ imposes no idle close and the client pings every 15 s.
 
 ---
 
-## Patch D — the TUI client-surface fold-in honours the full disabled list (M1 re-open, R2-S9)
+## Patch D — DROPPED (not needed on v0.22.2)
 
-**Symptom (senior C16-PR714-CIOS-PROFILES-002, M1 re-open):** on the proxy versions the TUI builds
-the agent with `enabled_toolsets` only and no `disabled_toolsets`, so the client-surface `project`
-(and on desktop `desktop_ui`) folds in AFTER `agent.disabled_toolsets` is applied — the advisory
-contract leaks the project write tools into every dashboard chat.
-
-**v0.22.2 (this fork) already differs:** `_make_agent`, `_background_agent_kwargs` (which the
-preview agent inherits via `_ephemeral_preview_agent_kwargs`) all pass
-`disabled_toolsets=_load_disabled_toolsets()`, and `_with_session_toolsets` already subtracted the
-disabled list from the fold-in — except it kept `desktop_ui`.
-
-**Patch D:** `tui_gateway/server.py::_with_session_toolsets` now drops EVERY folded client-surface
-toolset named in `agent.disabled_toolsets`, `desktop_ui` included (removed the `- {"desktop_ui"}`
-exception and the conditional). The agent's own `disabled_toolsets` argument remains the second
-gate on every builder. This is the senior's recommended option 1.
-
-**Proof (real path, at the image build — see the re-pin PR's D-TEST):** for each seeded profile,
-with `HERMES_HOME` set to it, the real fork resolver (`_load_enabled_toolsets` + `_load_disabled_toolsets`
-+ `model_tools.get_tool_definitions`) resolves the agent's tools to ONLY `memory`, `todo_list`,
-`session_search` and `kg_*` (memory and todo_list present); the preview path (`enabled=[terminal,file]`
-+ the profile disabled list) resolves to no write tool. The test fails on any exception and never
-skips.
+The senior re-review confirmed (Carril 75d4d9de) that v0.22.2's dashboard agent builder ALREADY
+applies `agent.disabled_toolsets`: `_make_agent` passes `disabled_toolsets=_load_disabled_toolsets()`,
+`_background_agent_kwargs` (inherited by the preview agent via `_ephemeral_preview_agent_kwargs`)
+passes it, and `_with_session_toolsets` already subtracts it from the client-surface fold-in. So with
+PR 714's complement seed — which disables `project` and `desktop_ui` per profile — the project tools
+are already removed from every advisory chat on v0.22.2. No code patch is applied; this branch is
+Patch A only. The real-path guard test `infra/quantum-hermes/tests/test_profile_tui_toolsets.sh`
+(carried by the re-pin PR) stays and MUST pass with NO patch on the merged-714 main.
