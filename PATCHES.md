@@ -4,73 +4,57 @@
 **Pin:** `d923a5eb487a17c0a68801bba9ef0f56c81040a8` (Release 0.22.2)
 **Fork:** `bondrider/hermes-agent`, branch `quantum/dashboard-patches-001`.
 
-These are small, separate patches that fix three live Hermes dashboard faults. Each is a single
-commit so it rebases cleanly onto a future upstream pin. Keep them minimal and re-appliable.
+Small, separate patches that fix live Hermes dashboard faults. Each is one commit so it rebases
+cleanly onto a future upstream pin.
 
 ---
 
-## Patch A — the dashboard adopts the one live host gateway (APPLIED)
+## Patch A - the dashboard adopts the gateway that owns its OWN home (APPLIED, home-scoped)
 
 **Symptom:** the dashboard gateway badge reads "Stopped / mode none / no pid" while the gateway
 runs and serves the chats.
 
-**Root cause:** the entrypoint starts and supervises `hermes gateway run` itself (folded on with
-`--force`); the dashboard status route's per-home liveness proof does not recognise that process.
-v0.22.2 already has the authoritative answer in `gateway/host_topology.py:host_gateway_topology()`
-(proven-live, `_from_host_record` -> `_from_served_record`), but no dashboard surface called it.
+**Root cause:** the container entrypoint starts and supervises `hermes gateway run` itself (folded
+on with `--force`, sometimes with no `gateway.pid`); the dashboard status route's own liveness
+verdict can miss it. **Live fact (2026-10-27):** the dashboard's `hermes_home` is the DEVELOPMENT
+home (`/data/hermes/dev`) and the badge must show THAT home's gateway (pid 691) - not the default
+home.
 
-**Files:**
-- `gateway/host_topology.py` — new pure helper `adopt_host_gateway_when_stopped(running, pid, *, probe=None)`.
-- `hermes_cli/web_routers/status.py` — `_resolve_gateway_status` overlays the helper at its return (guarded).
-- `tests/gateway/test_host_gateway_adoption.py` — unit test of the helper.
+**Fix (home-scoped):**
+- `gateway/host_topology.py` - pure helper `adopt_home_gateway_when_stopped(running, pid, home, *, probe=None)`.
+  When, and only when, the local verdict is not-running, it proves the gateway that owns `home`
+  through `gateway.status.live_gateway_pid_for_home` (pid file + runtime lock, then the runtime
+  record proven against the live process - the launch-service / no-`gateway.pid` case included) and
+  reports running with that home's pid. A gateway in a DIFFERENT home is never adopted.
+- `hermes_cli/web_routers/status.py` - `_resolve_gateway_status` passes the dashboard's OWN resolved
+  home (`profile_dir or get_process_hermes_home()`) to the helper and overlays the result at its
+  return (guarded; `gateway_state` -> `running` only on adoption).
+- `tests/gateway/test_host_gateway_adoption.py` - the helper: adopts the gateway owning this home;
+  a gateway in a different home is NOT adopted; a running verdict is untouched (probe skipped); the
+  default probe resolves `live_gateway_pid_for_home`.
 
-**Re-apply:** re-add the helper and re-wire the one overlay at the `_resolve_gateway_status`
-return. The overlay is guarded, so default behaviour is unchanged when no host gateway is proven.
+**Re-apply on a new upstream:** re-add the helper and re-wire the one overlay at the
+`_resolve_gateway_status` return, passing the surface's own home. Guarded, so default behaviour is
+unchanged when no gateway owns the home.
 
-**Still needs the live dashboard:** `host_gateway_topology()` reads the DEFAULT home's record,
-while the dashboard is served over the development home. José's live dashboard must confirm the
-badge flips to the intended gateway's pid. If the development-home gateway must be adopted instead,
-the helper call should pass a home-scoped probe (a `live_gateway_pid_for_home(dev_home)` variant) —
-decide after the live check.
-
----
-
-## Patch B — the picker offers only the models a route can serve (REDIRECTED to quantum-tracker)
-
-**NOT a fork patch.** The intended "filter the inventory catalogue by `provider.only`" is not
-implementable in `hermes_cli/inventory.py`:
-
-1. `provider.only` is **not** an inventory-visible field. In the Quantum config each route is a
-   custom provider `{name, base_url, key_env, extra_body:{provider:{only:[vendor]}}}` with **no
-   `models:` list**, so the picker treats it as an OpenRouter routing aggregator and lists the whole
-   catalogue (`hermes_cli/inventory.py` aggregator path).
-2. `provider.only` names the OpenRouter **serving provider** (e.g. `nvidia`, `atlas-cloud/fp8`),
-   which does **not** map to a model-id vendor prefix (e.g. the `openrouter-dots` route pins
-   `atlas-cloud/fp8` but its model is `dots-studio/dots-3-note-preview:free`). So an inventory
-   filter keyed on `provider.only` cannot select the right models.
-
-**Clean fix (config-side, in quantum-tracker):** in `infra/quantum-hermes/entrypoint.sh`, the
-`custom_providers` builder should add an explicit `"models": [e["model"]]` to each route's entry.
-Each route serves exactly its one model; an explicit `models:` allow-list makes the provider
-`is_user_defined` so the picker offers only that model — directly "only the models the provider can
-serve". Add a seed/inventory test that each custom provider carries its single route model.
-
-This belongs in a quantum-tracker PR (the Dockerfile re-pin PR or a sibling), not in this fork.
+**Tests:** the full pytest suite needs Python 3.11+ (image build / CI). On this host the helper's
+assertions were run directly and pass; the TS/py gates run in CI.
 
 ---
 
-## Patch C — chat websocket 1005 at ~35 s (DEFERRED, needs the live dashboard)
+## Patch B - the picker offers only the models a route can serve (quantum-tracker, separate PR)
 
-**Finding:** the quantum-tracker wrapper gate (`infra/quantum-hermes/gate/gate.py:1001 _relay`)
-imposes **no** ~35 s idle close (`up.settimeout(None)`, a 3600 s cap, a 5 s select poll), and the
-web client already pings every 15 s (`apps/shared/src/json-rpc-channel.ts:154`
-`DEFAULT_HEARTBEAT_INTERVAL_MS=15_000`, deadline 45 s). So the ~35 s 1005 is the **edge/proxy**
-closing a socket that lacks sub-35 s frames — most plausibly the chat/stream ws, distinct from the
-15 s-pinged control channel.
+NOT a fork patch. `provider.only` is not an inventory-visible field and names the OpenRouter serving
+provider (e.g. `atlas-cloud/fp8`), which does not map to a model-id prefix, so `hermes_cli/inventory.py`
+cannot filter on it. Each route's custom provider carries no `models:` list, so the picker
+aggregator-lists the whole catalogue. **Clean fix (config-side):** in quantum-tracker
+`infra/quantum-hermes/entrypoint.sh`, the `custom_providers` builder adds `"models": [e["model"]]`
+per route, so each custom provider offers only its one served model. Delivered as a separate
+quantum-tracker PR (branch `hermes/picker-provider-models`) with a test.
 
-**Decide after the live diagnosis (which socket gets the 1005):**
-- if the stream ws — a server-initiated keep-alive ping under 35 s in `tui_gateway/ws.py`
-  (`handle_ws`), config-gated; a fork patch, unit-testable with a fake clock; **or**
-- if purely the edge — raise the Railway service websocket/idle timeout (outside both repos).
+---
 
-gate.py is ruled out as the fix site.
+## Patch C - chat websocket 1005 at ~35 s (DROPPED)
+
+Live diagnosis (2026-10-27): the ~35 s close was NOT real. No keep-alive is built. gate.py already
+imposes no idle close and the client pings every 15 s.
